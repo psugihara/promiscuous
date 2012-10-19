@@ -2,6 +2,6 @@ module Promiscuous::Publisher::Envelope
   extend ActiveSupport::Concern
 
   def payload
-    { :payload => super }
+    { :hostname  => Socket.gethostname, :payload => super }
   end
 end
