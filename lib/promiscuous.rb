@@ -1,12 +1,25 @@
 require 'active_support/core_ext'
 
 module Promiscuous
+  def self.require_for(gem, file)
+    require gem
+    require file
+  rescue LoadError
+  end
+
   require 'promiscuous/autoload'
-  require 'promiscuous/railtie' if defined?(Rails)
+  require_for 'rails',  'promiscuous/railtie'
+  require_for 'resque', 'promiscuous/resque'
+
 
   extend Promiscuous::Autoload
   autoload :Common, :Publisher, :Subscriber, :Observer, :Worker, :Ephemeral,
-           :CLI, :Error, :Loader, :AMQP, :Redis, :Config
+           :CLI, :Error, :Loader, :AMQP, :Redis, :ZK, :Config, :DSL, :Key,
+           :Convenience, :Dependency, :Middleware
+
+  extend Promiscuous::DSL
+
+  Object.__send__(:include, Promiscuous::Convenience)
 
   class << self
     def configure(&block)
@@ -19,56 +32,32 @@ module Promiscuous
       end
     end
 
-    def reload
-      desc  = Promiscuous::Publisher::Base.descendants
-      desc += Promiscuous::Subscriber::Base.descendants
-      desc.reject! { |klass| klass.name =~ /^Promiscuous::/ }
-      desc.each { |klass| klass.setup_class_binding }
-    end
-
     def connect
       AMQP.connect
       Redis.connect
+      ZK.connect
     end
 
     def disconnect
       AMQP.disconnect
       Redis.disconnect
+      ZK.disconnect
     end
 
     def healthy?
       AMQP.ensure_connected
       Redis.ensure_connected
+      ZK.ensure_connected
     rescue
       false
     else
       true
     end
-  end
 
-  module ConsoleHelpers
-    # These are just for the subscriber, some helpers to debug in production
-    def global_key
-      Promiscuous::Redis.sub_key('global')
-    end
-
-    def global_version
-      Promiscuous::Redis.get(global_key).to_i
-    end
-
-    def global_version=(value)
-      Promiscuous::Redis.set(global_key, value)
-      Promiscuous::Redis.publish(global_key, value)
-      value
-    end
-
-    def global_version!
-      version = Promiscuous::Redis.incr(global_key)
-      Promiscuous::Redis.publish(global_key, version)
-      version
+    def transaction(*args, &block)
+      Publisher::Transaction.open(*args, &block)
     end
   end
-  extend ConsoleHelpers
 
   at_exit { self.disconnect rescue nil }
 end

@@ -13,19 +13,11 @@ module Promiscuous::Redis
     self.master = nil
   end
 
-  def self.new_connection
+  def self.new_connection(url=nil)
     return Null.new if Promiscuous::Config.backend == :null
 
-    redis_url = Promiscuous::Config.redis_url || 'redis://localhost/'
-    url = URI.parse(redis_url)
-    raise "Please use redis://:password@host:port/db" if url.scheme != 'redis'
-
-    redis_options = { :host          => url.host,
-                      :port          => url.port,
-                      :password      => url.password,
-                      :db            => url.path.empty? ? nil : url.path,
-                      :tcp_keepalive => 60}
-    redis = ::Redis.new(redis_options)
+    url ||= Promiscuous::Config.redis_url
+    redis = ::Redis.new(:url => url, :tcp_keepalive => 60)
     redis.client.connect
     redis
   end
@@ -72,12 +64,23 @@ module Promiscuous::Redis
   end
 
   class Null
+    def pipelined(&block)
+      @pipelined = true
+      res = block.call if block
+      @pipelined = false
+      res
+    end
+
     def client
       return self.class.new
     end
 
     def method_missing(name, *args, &block)
-      0
+      @pipelined ? Future.new : 0
+    end
+
+    class Future
+      def value; 0; end
     end
   end
 end

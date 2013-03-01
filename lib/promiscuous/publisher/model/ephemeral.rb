@@ -1,11 +1,28 @@
 module Promiscuous::Publisher::Model::Ephemeral
   extend ActiveSupport::Concern
-  include Promiscuous::Publisher::Model
+  include Promiscuous::Publisher::Model::Base
 
   attr_accessor :id, :new_record, :destroyed
 
-  def initialize(attrs)
-    self.id = 1
+  module PromiscuousMethodsEphemeral
+    def attribute(attr)
+      value = super
+      if value.is_a?(Array) &&
+         value.first.is_a?(Promiscuous::Publisher::Model::Ephemeral)
+         value = {:__amqp__ => '__promiscuous__/embedded_many',
+                  :payload  => value.map(&:promiscuous).map(&:payload)}
+      end
+      value
+    end
+  end
+
+  class PromiscuousMethods
+    include Promiscuous::Publisher::Model::Base::PromiscuousMethodsBase
+    include Promiscuous::Publisher::Model::Ephemeral::PromiscuousMethodsEphemeral
+  end
+
+  def initialize(attrs={})
+    self.id ||= 'none'
     self.new_record = true
     self.destroyed = false
     attrs.each { |attr, value| __send__("#{attr}=", value) }
@@ -15,7 +32,7 @@ module Promiscuous::Publisher::Model::Ephemeral
     operation = :create
     operation = :update  unless self.new_record
     operation = :destroy if     self.destroyed
-    promiscuous_sync(:operation => operation)
+    promiscuous.sync(:operation => operation)
     self.new_record = false
     true
   end
@@ -32,7 +49,19 @@ module Promiscuous::Publisher::Model::Ephemeral
     save
   end
 
+  def attributes
+    Hash[self.class.published_attrs.map { |attr| [attr, __send__(attr)] }]
+  end
+
   module ClassMethods
+    def publish(*args)
+      super
+      published_attrs.each do |attr|
+        # TODO do not overwrite existing methods
+        attr_accessor attr
+      end
+    end
+
     def create(attributes)
       new(attributes).tap { |m| m.save }
     end

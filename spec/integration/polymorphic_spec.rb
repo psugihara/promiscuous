@@ -10,7 +10,10 @@ if ORM.has(:polymorphic)
 
       context 'when creating' do
         it 'replicates the parent' do
-          pub = PublisherModel.create(:field_1 => '1', :field_2 => '2', :field_3 => '3')
+          pub = nil
+          Promiscuous.transaction do
+            pub = PublisherModel.create(:field_1 => '1', :field_2 => '2', :field_3 => '3')
+          end
 
           eventually do
             sub = SubscriberModel.find(pub.id)
@@ -22,8 +25,11 @@ if ORM.has(:polymorphic)
         end
 
         it 'replicates the child' do
-          pub = PublisherModelChild.create(:field_1 => '1', :field_2 => '2', :field_3 => '3',
-                                           :child_field_1 => 'child_1')
+          pub = nil
+          Promiscuous.transaction do
+            pub = PublisherModelChild.create(:field_1 => '1', :field_2 => '2', :field_3 => '3',
+                                             :child_field_1 => 'child_1')
+          end
 
           eventually do
             sub = SubscriberModelChild.find(pub.id)
@@ -39,8 +45,11 @@ if ORM.has(:polymorphic)
 
       context 'when updating' do
         it 'replicates the parent' do
-          pub = PublisherModel.create(:field_1 => '1', :field_2 => '2', :field_3 => '3')
-          pub.update_attributes(:field_1 => '1_updated', :field_2 => '2_updated')
+          pub = nil
+          Promiscuous.transaction do
+            pub = PublisherModel.create(:field_1 => '1', :field_2 => '2', :field_3 => '3')
+            pub.update_attributes(:field_1 => '1_updated', :field_2 => '2_updated')
+          end
 
           eventually do
             sub = SubscriberModel.find(pub.id)
@@ -52,10 +61,13 @@ if ORM.has(:polymorphic)
         end
 
         it 'replicates the child' do
-          pub = PublisherModelChild.create(:field_1 => '1', :field_2 => '2', :field_3 => '3',
-                                           :child_field_1 => 'child_1')
-          pub.update_attributes(:field_1 => '1_updated', :field_2 => '2_updated',
-                                :child_field_1 => 'child_1_updated')
+          pub = nil
+          Promiscuous.transaction do
+            pub = PublisherModelChild.create(:field_1 => '1', :field_2 => '2', :field_3 => '3',
+                                             :child_field_1 => 'child_1')
+            pub.update_attributes(:field_1 => '1_updated', :field_2 => '2_updated',
+                                  :child_field_1 => 'child_1_updated')
+          end
 
           eventually do
             sub = SubscriberModelChild.find(pub.id)
@@ -70,34 +82,86 @@ if ORM.has(:polymorphic)
 
       context 'when destroying' do
         it 'replicates the parent' do
-          pub = PublisherModel.create(:field_1 => '1', :field_2 => '2', :field_3 => '3')
+          pub = nil
+          Promiscuous.transaction do
+            pub = PublisherModel.create(:field_1 => '1', :field_2 => '2', :field_3 => '3')
+          end
 
           eventually { SubscriberModel.count.should == 1 }
-          pub.destroy
+          Promiscuous.transaction { pub.destroy }
           eventually { SubscriberModel.count.should == 0 }
         end
 
         it 'replicates the child' do
-          pub = PublisherModelChild.create(:field_1 => '1', :field_2 => '2', :field_3 => '3',
-                                           :child_field_1 => 'child_1')
+          pub = nil
+          Promiscuous.transaction do
+            pub = PublisherModelChild.create(:field_1 => '1', :field_2 => '2', :field_3 => '3',
+                                             :child_field_1 => 'child_1')
+          end
 
           eventually { SubscriberModelChild.count.should == 1 }
-          pub.destroy
+          Promiscuous.transaction { pub.destroy }
           eventually { SubscriberModelChild.count.should == 0 }
         end
       end
     end
 
-    context 'when collapsing a polymorphic hierarchy', :pending => true do
+    context 'when collapsing a polymorphic hierarchy' do
+      before do
+        define_constant :Publisher1 do
+          include Mongoid::Document
+          include Promiscuous::Publisher
+          field :field_1
+          publish :field_1, :to => 'crowdtap/publisher'
+        end
+
+        define_constant :Publisher2, Publisher1 do
+          field :field_2
+          publish :field_2
+        end
+
+        define_constant :Publisher3, Publisher2 do
+          field :field_3
+          publish :field_3
+        end
+
+        define_constant :Subscriber1 do
+          include Mongoid::Document
+          include Promiscuous::Subscriber
+          field :field_1
+          subscribe :as => :Publisher1, :from => 'crowdtap/publisher'
+          subscribe :field_1
+        end
+
+        define_constant :Subscriber2, Subscriber1 do
+          field :field_2
+          subscribe :as => :Publisher2
+          subscribe :field_2
+        end
+      end
+
       before { run_subscriber_worker! }
 
-      it 'doesn\'t replicate child fields' do
-        SubscriberModelChild.class_eval { field :child_field_1, :default => "default" }
-        pub = PublisherModel.create(:field_1 => '1', :field_2 => '2', :field_3 => '3')
+      it 'replicates' do
+        pub1 = pub2 = pub3 = nil
+        Promiscuous.transaction do
+          pub1 = Publisher1.create(:field_1 => '11')
+          pub2 = Publisher2.create(:field_1 => '21', :field_2 => '22')
+          pub3 = Publisher3.create(:field_1 => '31', :field_2 => '32', :field_3 => '33')
+        end
 
         eventually do
-          sub = SubscriberModelChild.find(pub.id)
-          sub.child_field_1.should == 'default'
+          Subscriber1.find(pub1.id).tap do |sub1|
+            sub1.field_1.should == '11'
+          end
+          Subscriber2.find(pub2.id).tap do |sub2|
+            sub2.field_1.should == '21'
+            sub2.field_2.should == '22'
+          end
+          Subscriber2.find(pub3.id).tap do |sub3|
+            sub3.field_1.should == '31'
+            sub3.field_2.should == '32'
+          end
         end
       end
     end
@@ -147,8 +211,11 @@ if ORM.has(:polymorphic)
 
       context 'when creating' do
         it 'replicates both child models' do
-          pub1 = PublisherModelChildRoot.create(:field_1 => '1', :child_field_1 => '2')
-          pub2 = PublisherModelAnotherChildRoot.create(:field_1 => '1', :another_child_field_1 => '2')
+          pub1 = pub2 = nil
+          Promiscuous.transaction do
+            pub1 = PublisherModelChildRoot.create(:field_1 => '1', :child_field_1 => '2')
+            pub2 = PublisherModelAnotherChildRoot.create(:field_1 => '1', :another_child_field_1 => '2')
+          end
 
           eventually do
             sub1 = SubscriberModelChildRoot.find(pub1.id)
@@ -166,11 +233,14 @@ if ORM.has(:polymorphic)
 
       context 'when updating' do
         it 'replicates both child models' do
-          pub1 = PublisherModelChildRoot.create(:field_1 => '1', :child_field_1 => '2')
-          pub2 = PublisherModelAnotherChildRoot.create(:field_1 => '1', :another_child_field_1 => '2')
+          pub1 = pub2 = nil
+          Promiscuous.transaction do
+            pub1 = PublisherModelChildRoot.create(:field_1 => '1', :child_field_1 => '2')
+            pub2 = PublisherModelAnotherChildRoot.create(:field_1 => '1', :another_child_field_1 => '2')
 
-          pub1.update_attributes(:field_1 => '1_updated', :child_field_1 => '2_updated')
-          pub2.update_attributes(:field_1 => '1_updated', :another_child_field_1 => '2_updated')
+            pub1.update_attributes(:field_1 => '1_updated', :child_field_1 => '2_updated')
+            pub2.update_attributes(:field_1 => '1_updated', :another_child_field_1 => '2_updated')
+          end
 
           eventually do
             sub1 = SubscriberModelChildRoot.find(pub1.id)
@@ -188,15 +258,20 @@ if ORM.has(:polymorphic)
 
       context 'when destroying' do
         it 'replicates the parent' do
-          pub1 = PublisherModelChildRoot.create(:field_1 => '1', :child_field_1 => '2')
-          pub2 = PublisherModelAnotherChildRoot.create(:field_1 => '1', :another_child_field_1 => '2')
+          pub1 = pub2 = nil
+          Promiscuous.transaction do
+            pub1 = PublisherModelChildRoot.create(:field_1 => '1', :child_field_1 => '2')
+            pub2 = PublisherModelAnotherChildRoot.create(:field_1 => '1', :another_child_field_1 => '2')
+          end
 
           eventually do
             SubscriberModelChildRoot.count.should == 1
             SubscriberModelAnotherChildRoot.count.should == 1
           end
-          pub1.destroy
-          pub2.destroy
+          Promiscuous.transaction do
+            pub1.destroy
+            pub2.destroy
+          end
           eventually do
             SubscriberModelChildRoot.count.should == 0
             SubscriberModelAnotherChildRoot.count.should == 0
