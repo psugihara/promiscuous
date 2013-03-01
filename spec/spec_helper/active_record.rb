@@ -6,7 +6,7 @@ if ENV['LOGGER_LEVEL']
 end
 
 ActiveRecord::Base.establish_connection(
-  :adapter  => "postgresql",
+  :adapter  => RUBY_PLATFORM == "java" ? "jdbcpostgresql" : "postgresql",
   :database => "promiscuous",
   :username => ENV["TRAVIS"] ? "postgres" : "promiscuous",
   :password => ENV["TRAVIS"] ?        nil : "promiscuous",
@@ -16,7 +16,9 @@ ActiveRecord::Base.establish_connection(
 class PromiscuousMigration < ActiveRecord::Migration
   def change
     [:publisher_models, :publisher_model_others,
-     :subscriber_models, :subscriber_model_others].each do |table|
+     :subscriber_models, :subscriber_model_others,
+     :publisher_dsl_models, :subscriber_dsl_models,
+     :publisher_another_dsl_models, :subscriber_another_dsl_models].each do |table|
       create_table table, :force => true do |t|
         t.string :field_1
         t.string :field_2

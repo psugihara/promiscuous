@@ -1,6 +1,6 @@
 module Promiscuous::AMQP
   extend Promiscuous::Autoload
-  autoload :Bunny, :RubyAMQP, :Null
+  autoload :HotBunny, :Bunny, :RubyAMQP, :Null, :Fake
 
   EXCHANGE = 'promiscuous'.freeze
 
@@ -27,6 +27,10 @@ module Promiscuous::AMQP
       backend.publish(options)
     end
 
-    delegate :connect, :disconnect, :connected?, :open_queue, :to => :backend
+    delegate :connect, :disconnect, :connected?, :to => :backend
+
+    def const_missing(sym)
+      backend.const_get(sym)
+    end
   end
 end

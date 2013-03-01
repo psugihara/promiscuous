@@ -1,5 +1,3 @@
-require 'crowdtap_redis_lock'
-
 class Promiscuous::Subscriber::Operation
   attr_accessor :payload
 
@@ -9,41 +7,51 @@ class Promiscuous::Subscriber::Operation
     self.payload = payload
   end
 
-  def with_instance_lock(&block)
-    return yield if Promiscuous::Config.backend == :null
-
-    key = Promiscuous::Redis.sub_key(id)
-    # We'll block for 60 seconds before raising an exception
-    ::RedisLock.new(Promiscuous::Redis, key).retry(300).every(0.2).lock_for_update(&block)
-  end
-
-  def verify_dependencies
-    @global_key = Promiscuous::Redis.sub_key('global')
-    Promiscuous::Redis.get(@global_key).to_i + 1 == message.global_version
-  end
-
-  def update_dependencies
-    Promiscuous::Redis.set(@global_key, message.global_version)
-    @changed_global_key = true
-  end
-
-  def publish_dependencies
-    Promiscuous::Redis.publish(@global_key, message.global_version) if @changed_global_key
-  end
-
-  def with_instance_dependencies
-    return yield unless message && message.has_dependencies?
-
-    with_instance_lock do
-      if verify_dependencies
-        yield
-        update_dependencies
-      else
-        Promiscuous.info "[receive] (skipped, already processed) #{message.payload}"
+  def self.update_dependencies(dependencies)
+    futures = nil
+    Promiscuous::Redis.multi do
+      futures = dependencies.map do |dep|
+        key = dep.key(:sub).for(:redis)
+        [key, Promiscuous::Redis.incr(key)]
       end
     end
 
-    publish_dependencies
+    if synchronizer = Celluloid::Actor[:message_synchronizer]
+      futures.each do |key, future|
+        synchronizer.async.try_notify_key_change(key, future.value)
+      end
+    end
+
+    Promiscuous::Redis.pipelined do
+      futures.each do |key, future|
+        Promiscuous::Redis.publish(key, future.value)
+      end
+    end
+  end
+
+  def update_dependencies
+    # link is not incremented
+    deps = message.dependencies[:read] + message.dependencies[:write]
+    self.class.update_dependencies(deps)
+  end
+
+  def verify_dependencies
+    # XXX This only works with one worker. We could take a lock on it, but
+    # we should never process message twice.
+    # It's more or less some smoke test.
+    # It also doesn't work with dummies as they don't have write depenencies
+    # for now (no id).
+    dep = message.dependencies[:write].first
+    if dep && Promiscuous::Redis.get(dep.key(:sub).for(:redis)).to_i != dep.version - 1
+      raise Promiscuous::Error::AlreadyProcessed
+    end
+  end
+
+  def with_instance_dependencies
+    verify_dependencies if message && message.has_dependencies?
+    result = yield
+    update_dependencies if message && message.has_dependencies?
+    result
   end
 
   def create
